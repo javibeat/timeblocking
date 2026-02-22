@@ -15,6 +15,8 @@ import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
 
+const MANUAL_BLOCKS_PATH = process.env.MANUAL_BLOCKS_PATH ?? "manual_blocks.json";
+
 const TZID = "Asia/Dubai";
 const DJ = process.env.DJ ?? "javi";
 const API_URL = process.env.GIGS_URL ?? `https://sunsetdjsnew-production.up.railway.app/api/gigs/?dj=${encodeURIComponent(DJ)}`;
@@ -52,6 +54,19 @@ function fetchJson(url) {
             })
             .on("error", reject);
     });
+}
+
+function loadManualBlocks() {
+    try {
+        if (!fs.existsSync(MANUAL_BLOCKS_PATH)) return { blocks: [] };
+        const raw = fs.readFileSync(MANUAL_BLOCKS_PATH, "utf8");
+        const parsed = JSON.parse(raw);
+        const blocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+        return { blocks };
+    } catch (e) {
+        console.warn(`Warning: failed to load ${MANUAL_BLOCKS_PATH}: ${e.message}`);
+        return { blocks: [] };
+    }
 }
 
 function pad2(n) {
@@ -160,6 +175,15 @@ function uidForEvent(key, ymd, startHm) {
     return `tb-${DJ}-${key}-${ymd}-${startHm.replace(":", "")}@javibeat`;
 }
 
+function uidForManualBlock(idOrTitle, ymd, startHm) {
+    const safe = String(idOrTitle ?? "block")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 40) || "block";
+    return `tb-${DJ}-manual-${safe}-${ymd}-${startHm.replace(":", "")}@javibeat`;
+}
+
 function buildIcs(events) {
     const lines = [];
     lines.push("BEGIN:VCALENDAR");
@@ -258,6 +282,7 @@ function scheduleBlocks(freeIntervals, ymd) {
 
 async function main() {
     const data = await fetchJson(API_URL);
+    const manual = loadManualBlocks();
 
     const today = data.server_date; // "YYYY-MM-DD"
     const gigs = Array.isArray(data.gigs) ? data.gigs : [];
@@ -270,6 +295,14 @@ async function main() {
         byDate.set(g.date, arr);
     }
 
+    const manualByDate = new Map();
+    for (const b of (manual.blocks ?? [])) {
+        if (!b?.date || !b?.start || !b?.end) continue;
+        const arr = manualByDate.get(b.date) ?? [];
+        arr.push(b);
+        manualByDate.set(b.date, arr);
+    }
+
     const allEvents = [];
 
     for (let i = 0; i < DAYS; i++) {
@@ -278,9 +311,11 @@ async function main() {
         const isWeekday = dow >= 1 && dow <= 5; // Mon-Fri
         if (!isWeekday) continue;
 
-        // Busy = (gig +/- 60 min)
+        // Busy = (gig +/- 60 min) + manual blocks
         const gigsForDay = byDate.get(ymd) ?? [];
+        const manualForDay = manualByDate.get(ymd) ?? [];
         const busy = [];
+
         for (const g of gigsForDay) {
             const { start, end } = parseRange(g.time);
             const startMin = start.hh * 60 + start.mm;
@@ -290,6 +325,14 @@ async function main() {
                 endMin: clamp(endMin + 60, 0, 1440),
             });
         }
+
+        // Manual blocks are treated as busy exactly as specified (no +/- buffer)
+        for (const b of manualForDay) {
+            const startMin = hmToMinutes(b.start);
+            const endMin = hmToMinutes(b.end);
+            busy.push({ startMin: clamp(startMin, 0, 1440), endMin: clamp(endMin, 0, 1440) });
+        }
+
         const busyMerged = mergeIntervals(busy);
 
         const morningStartMin = hmToMinutes(BREAKFAST_END);
@@ -303,6 +346,16 @@ async function main() {
         // Remove busy from available (mostly redundant because we already end before the earliest busy,
         // but keeps it safe if there are morning conflicts one day)
         const free = subtractIntervals(available, busyMerged).filter((x) => x.endMin > x.startMin);
+
+        // Add manual blocks as visible events in the subscribed calendar
+        for (const b of manualForDay) {
+            allEvents.push({
+                uid: uidForManualBlock(b.id ?? b.title ?? "block", ymd, b.start),
+                summary: b.title ?? "Bloqueado",
+                dtstart: dtLocalFloating(ymd, b.start),
+                dtend: dtLocalFloating(ymd, b.end),
+            });
+        }
 
         const dayEvents = scheduleBlocks(free, ymd);
         allEvents.push(...dayEvents);
