@@ -1,0 +1,39 @@
+name: Generate timeblocking ICS
+
+on:
+  schedule:
+    # GitHub cron is UTC. 00:00 Asia/Dubai = 20:00 UTC (previous day).
+    - cron: "0 20 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Generate ICS
+        env:
+          DJ: javi
+          DAYS: "7"
+          GIGS_URL: "https://sunsetdjsnew-production.up.railway.app/api/gigs/?dj=javi"
+        run: |
+          node scripts/generate_timeblocking.mjs
+          ls -la docs
+
+      - name: Commit updated ICS
+        run: |
+          git config user.name "timeblocking-bot"
+          git config user.email "timeblocking-bot@users.noreply.github.com"
+          git add docs/timeblocking.ics
+          git commit -m "Update timeblocking.ics" || echo "No changes to commit"
+          git push
