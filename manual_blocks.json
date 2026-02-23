@@ -1,4 +1,12 @@
 {
   "timezone": "Asia/Dubai",
-  "blocks": []
+  "blocks": [
+    {
+      "id": "mechanic-2026-02-23",
+      "title": "Mecánico (coche)",
+      "date": "2026-02-23",
+      "start": "11:00",
+      "end": "13:30"
+    }
+  ]
 }
